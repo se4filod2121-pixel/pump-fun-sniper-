@@ -56,9 +56,9 @@ const path = require("path");
 const CONFIG = {
   EARLY_WINDOW_SEC: 90,          // ilk kaç saniyedeki alımlar "erken alıcı" sayılır
   MIN_LAUNCH_BUY_SOL: 0.05,      // bu kadar altı kurucu alımı olan token hiç izlenmez (gürültü azaltma)
-  MAX_TRACKED_TOKENS: 400,       // aynı anda izlenen maksimum token (bellek/abonelik koruması)
-  TRACK_WINDOW_HOURS: 24,        // bir token en fazla bu kadar süre izlenip sonuçlandırılır
-  DEAD_AFTER_MIN: 120,           // bu kadar dakika işlem görmeyen token "öldü" sayılır
+  MAX_TRACKED_TOKENS: 3000,      // aynı anda izlenen maksimum token (bellek ucuz, pump.fun'ın hızına göre ayarlandı)
+  TRACK_WINDOW_HOURS: 6,         // bir token en fazla bu kadar süre izlenip sonuçlandırılır (pump.fun'da çoğu şey ilk saatlerde belli olur)
+  DEAD_AFTER_MIN: 30,            // bu kadar dakika işlem görmeyen token "öldü" sayılır
   WIN_MULTIPLE: 3,               // peak/başlangıç oranı bunun üstündeyse "kazanan" token
 
   MINE_INTERVAL_HOURS: 12,       // akıllı cüzdan listesi kaç saatte bir yeniden hesaplanır
@@ -175,10 +175,11 @@ async function tgPollCommands() {
 
 function buildStatusMessage(periodic) {
   const uptimeMin = Math.floor((Date.now() - state.startedAt) / 60000);
+  const withBuyers = [...state.tracked.values()].filter((t) => t.buyers.size > 0).length;
   return (
     `${periodic ? "🔔" : "📊"} <b>SİNYAL BOTU DURUMU</b>${periodic ? " (otomatik)" : ""}\n` +
     `Aktif: ${state.active ? "✅" : "⏸"}\n` +
-    `İzlenen token: ${state.tracked.size}/${CONFIG.MAX_TRACKED_TOKENS}\n` +
+    `İzlenen token: ${state.tracked.size}/${CONFIG.MAX_TRACKED_TOKENS} (alıcısı kaydedilen: ${withBuyers})\n` +
     `Akıllı cüzdan: ${smartWalletSet.size} (toplam ölçülen: ${Object.keys(db.walletStats).length})\n` +
     `Son liste güncelleme: ${db.lastMinedAt ? new Date(db.lastMinedAt).toISOString().slice(0, 16).replace("T", " ") : "henüz yok"}\n` +
     `Bugünkü sinyal: ${state.signalsToday}\n` +
@@ -481,16 +482,17 @@ function noteReconnectAndMaybeAlert() {
 }
 
 // ---------- BAŞLAT ----------
+let currentWs = null;
 function start() {
   log("BOT", "Akıllı cüzdan + hız sinyal botu başlıyor");
   const ws = new WebSocket("wss://pumpportal.fun/api/data");
+  currentWs = ws;
   ws.on("open", () => {
     log("WS", "PumpPortal bağlandı");
     ws.send(JSON.stringify({ method: "subscribeNewToken" }));
     tgSend(
       `🤖 Sinyal botu çalışıyor!\nAkıllı cüzdan: ${smartWalletSet.size}\nKomutlar: /durum /liste /sinyaller /onayla /durdur /baslat`
     );
-    setInterval(() => sweepTracked(ws), CONFIG.SWEEP_INTERVAL_SEC * 1000);
   });
   ws.on("message", (raw) => {
     try {
@@ -503,6 +505,9 @@ function start() {
   ws.on("error", (e) => log("WS", e.message));
 }
 
+// sweep tek bir interval üzerinden, her seferinde güncel bağlantıyı kullanır
+// (WS her yeniden bağlandığında yeni interval oluşturmak sızıntıya yol açardı)
+setInterval(() => { if (currentWs) sweepTracked(currentWs); }, CONFIG.SWEEP_INTERVAL_SEC * 1000);
 setInterval(() => { if (dirty) { saveDb(db); dirty = false; } }, CONFIG.PERSIST_INTERVAL_SEC * 1000);
 setInterval(recomputeSmartWallets, CONFIG.MINE_INTERVAL_HOURS * 3600 * 1000);
 setInterval(() => tgSend(buildStatusMessage(true)), CONFIG.STATUS_UPDATE_MIN * 60 * 1000);

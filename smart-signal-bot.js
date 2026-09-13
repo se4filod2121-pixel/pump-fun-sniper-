@@ -18,6 +18,9 @@
  *   NOT: Bot ilk 24-48 saat veri toplarken liste küçük/boş olur, sinyaller
  *   seyrek gelir. Bu normaldir — veri biriktikçe kalite artar.
  *
+ * Bot ayrıca her 10 dakikada bir kendi durumunu (STATUS_UPDATE_MIN) otomatik
+ * olarak Telegram'a bildirir — komut beklemeden.
+ *
  * TELEGRAM KOMUTLARI:
  *   /durum     -> bot durumu, izlenen token, akıllı cüzdan sayısı
  *   /liste     -> en iyi akıllı cüzdanlar (kısa özet)
@@ -75,6 +78,8 @@ const CONFIG = {
 
   WS_RECONNECT_ALERT_THRESHOLD: 5,  // bu pencerede bu kadar kopma olursa uyar
   WS_RECONNECT_WINDOW_MIN: 10,
+
+  STATUS_UPDATE_MIN: 10,            // botun kendi durumunu otomatik bildirdiği aralık
 
   PERSIST_INTERVAL_SEC: 60,
   SWEEP_INTERVAL_SEC: 300,
@@ -167,20 +172,24 @@ async function tgPollCommands() {
   setTimeout(tgPollCommands, 1000);
 }
 
+function buildStatusMessage(periodic) {
+  const uptimeMin = Math.floor((Date.now() - state.startedAt) / 60000);
+  return (
+    `${periodic ? "🔔" : "📊"} <b>SİNYAL BOTU DURUMU</b>${periodic ? " (otomatik)" : ""}\n` +
+    `Aktif: ${state.active ? "✅" : "⏸"}\n` +
+    `İzlenen token: ${state.tracked.size}/${CONFIG.MAX_TRACKED_TOKENS}\n` +
+    `Akıllı cüzdan: ${smartWalletSet.size} (toplam ölçülen: ${Object.keys(db.walletStats).length})\n` +
+    `Son liste güncelleme: ${db.lastMinedAt ? new Date(db.lastMinedAt).toISOString().slice(0, 16).replace("T", " ") : "henüz yok"}\n` +
+    `Bugünkü sinyal: ${state.signalsToday}\n` +
+    `Takip edilen onaylı sinyal: ${Object.keys(db.approved).length}\n` +
+    `Çalışma süresi: ${uptimeMin} dk`
+  );
+}
+
 async function handleCommand(rawText) {
   const text = rawText.toLowerCase();
   if (text === "/durum" || text === "/status") {
-    const uptimeMin = Math.floor((Date.now() - state.startedAt) / 60000);
-    await tgSend(
-      `📊 <b>SİNYAL BOTU DURUMU</b>\n` +
-      `Aktif: ${state.active ? "✅" : "⏸"}\n` +
-      `İzlenen token: ${state.tracked.size}/${CONFIG.MAX_TRACKED_TOKENS}\n` +
-      `Akıllı cüzdan: ${smartWalletSet.size} (toplam ölçülen: ${Object.keys(db.walletStats).length})\n` +
-      `Son liste güncelleme: ${db.lastMinedAt ? new Date(db.lastMinedAt).toISOString().slice(0, 16).replace("T", " ") : "henüz yok"}\n` +
-      `Bugünkü sinyal: ${state.signalsToday}\n` +
-      `Takip edilen onaylı sinyal: ${Object.keys(db.approved).length}\n` +
-      `Çalışma süresi: ${uptimeMin} dk`
-    );
+    await tgSend(buildStatusMessage(false));
   } else if (text === "/liste") {
     if (!db.smartWallets.length) {
       await tgSend("Henüz akıllı cüzdan listesi yok — bot veri topluyor, ilk liste 12 saat içinde çıkar.");
@@ -479,6 +488,7 @@ function start() {
 
 setInterval(() => { if (dirty) { saveDb(db); dirty = false; } }, CONFIG.PERSIST_INTERVAL_SEC * 1000);
 setInterval(recomputeSmartWallets, CONFIG.MINE_INTERVAL_HOURS * 3600 * 1000);
+setInterval(() => tgSend(buildStatusMessage(true)), CONFIG.STATUS_UPDATE_MIN * 60 * 1000);
 // Yeterli veri birikmesi için ilk cüzdan hesaplamasını hemen değil, biraz veri toplandıktan sonra yap
 setTimeout(recomputeSmartWallets, 30 * 60 * 1000);
 

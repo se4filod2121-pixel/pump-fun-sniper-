@@ -1,0 +1,16 @@
+{
+  "name": "pumpfun-sniper",
+  "version": "1.0.0",
+  "description": "Pump.fun sniper bot - Telegram kontrollu, bulutta 7/24 calisir",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "start:signal": "node smart-signal-bot.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

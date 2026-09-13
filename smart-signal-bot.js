@@ -22,13 +22,25 @@
  *   /durum     -> bot durumu, izlenen token, akıllı cüzdan sayısı
  *   /liste     -> en iyi akıllı cüzdanlar (kısa özet)
  *   /sinyaller -> son sinyaller ve (varsa) sonuçları
+ *   /kalite    -> tüm sinyallerin gerçek sonuç istatistiği (2x/5x oranı vb.)
  *   /onayla <mint_önek>  -> bir sinyali takibe al (checkpoint bildirimleri için)
  *   /durdur    -> yeni sinyal üretmeyi durdurur (izleme/öğrenme devam eder)
  *   /baslat    -> tekrar aktif eder
  *   /ayarlar   -> aktif eşik ve limitleri gösterir
  *
+ * RUG/UYARI TESPİTİ (ücretsiz, ekstra veri kaynağı gerekmez):
+ *   Kurucu erken satarsa ya da erken satış yoğunsa sinyale ⚠️ uyarısı eklenir
+ *   ve kalite yıldızı düşürülür — zaten dinlediğimiz trade akışından çıkarılır.
+ *
+ * CÜZDAN SKORLAMASI:
+ *   Sadece kazanma oranı değil, pozisyon büyüklüğü (büyük bahisle kazanmak
+ *   daha değerli) ve yakınlık (eski performans zamanla ağırlığını kaybeder)
+ *   ile ağırlıklandırılır.
+ *
  * GEREKLİ ORTAM DEĞİŞKENLERİ:
  *   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  (aynı bot.js'teki gibi @BotFather / @userinfobot)
+ *   DATA_DIR (opsiyonel) -> kalıcı veri dosyasının yazılacağı klasör (Railway
+ *   Volume mount path'i, örn. /data). Verilmezse kod dizinine yazar (kalıcı olmaz).
  */
 
 const WebSocket = require("ws");
@@ -57,13 +69,21 @@ const CONFIG = {
 
   CHECKPOINTS: [2, 5, 10, 20],      // /onayla sonrası bildirim eşikleri (x)
 
+  EARLY_SELL_WINDOW_SEC: 180,       // bu pencerede satış "erken satış" sayılır (rug/dump uyarısı)
+  EARLY_SELL_WARN_COUNT: 3,         // bu kadar erken satış görülünce genel uyarı verilir
+  RECENCY_HALFLIFE_DAYS: 14,        // cüzdan skorunda eski performansın yarı ömrü
+
+  WS_RECONNECT_ALERT_THRESHOLD: 5,  // bu pencerede bu kadar kopma olursa uyar
+  WS_RECONNECT_WINDOW_MIN: 10,
+
   PERSIST_INTERVAL_SEC: 60,
   SWEEP_INTERVAL_SEC: 300,
   PORT: parseInt(process.env.PORT || "3000", 10),
 };
 // =====================================================
 
-const DB_FILE = path.join(__dirname, "smart-signal-data.json");
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const DB_FILE = path.join(DATA_DIR, "smart-signal-data.json");
 
 function loadDb() {
   try {
@@ -173,9 +193,26 @@ async function handleCommand(rawText) {
   } else if (text === "/sinyaller") {
     if (!db.signalHistory.length) { await tgSend("Henüz sinyal atılmadı."); return; }
     const list = db.signalHistory.slice(0, 10)
-      .map((s) => `• ${s.symbol} — 👥${s.smartCount} ⚡%${s.velocity} — <code>${s.mint.slice(0, 8)}</code>`)
+      .map((s) => {
+        const outcome = s.outcomeRatio !== undefined ? ` → ${s.outcomeRatio.toFixed(2)}x` : "";
+        return `• ${s.symbol} — 👥${s.smartCount} ⚡%${s.velocity} — <code>${s.mint.slice(0, 8)}</code>${outcome}`;
+      })
       .join("\n");
     await tgSend(`📡 <b>SON SİNYALLER</b>\n${list}`);
+  } else if (text === "/kalite") {
+    const done = db.signalHistory.filter((s) => s.outcomeRatio !== undefined);
+    if (!done.length) { await tgSend("Henüz sonuçlanan sinyal yok — biraz daha zaman lazım."); return; }
+    const avg = done.reduce((a, s) => a + s.outcomeRatio, 0) / done.length;
+    const win2x = done.filter((s) => s.outcomeRatio >= 2).length;
+    const win5x = done.filter((s) => s.outcomeRatio >= 5).length;
+    const lose = done.filter((s) => s.outcomeRatio < 1).length;
+    await tgSend(
+      `📈 <b>SİNYAL KALİTESİ</b> (${done.length} sonuçlanmış / ${db.signalHistory.length} toplam)\n` +
+      `Ortalama sonuç: ${avg.toFixed(2)}x\n` +
+      `2x+: ${win2x} (%${Math.round((win2x / done.length) * 100)})\n` +
+      `5x+: ${win5x} (%${Math.round((win5x / done.length) * 100)})\n` +
+      `Zararda kapanan: ${lose} (%${Math.round((lose / done.length) * 100)})`
+    );
   } else if (text.startsWith("/onayla")) {
     const parts = rawText.split(/\s+/);
     const prefix = parts[1];
@@ -202,7 +239,7 @@ async function handleCommand(rawText) {
     );
   } else if (text === "/yardim" || text === "/help") {
     await tgSend(
-      `📋 <b>KOMUTLAR</b>\n/durum /liste /sinyaller\n/onayla <mint önek>\n/durdur /baslat /ayarlar`
+      `📋 <b>KOMUTLAR</b>\n/durum /liste /sinyaller /kalite\n/onayla <mint önek>\n/durdur /baslat /ayarlar`
     );
   }
 }
@@ -227,18 +264,28 @@ async function maybeSignal(tok) {
   if (smartCount >= CONFIG.MIN_SMART_BUYERS_FOR_SIGNAL || velocity >= CONFIG.VELOCITY_THRESHOLD_PCT) {
     tok.signaled = true;
     state.signalsToday++;
-    const starsN = Math.max(1, Math.min(3, smartCount + (velocity > 150 ? 1 : 0)));
+
+    const warnings = [];
+    if (tok.creatorSold) warnings.push("kurucu erken sattı");
+    else if ((tok.earlySells || 0) >= CONFIG.EARLY_SELL_WARN_COUNT) warnings.push("erken satış yoğun");
+
+    let starsN = Math.max(1, Math.min(3, smartCount + (velocity > 150 ? 1 : 0)));
+    if (warnings.length) starsN = 1; // uyarı varsa kalite otomatik düşer
     const stars = "★".repeat(starsN) + "☆".repeat(3 - starsN);
+
     const record = {
       mint: tok.mint, symbol: tok.symbol, at: Date.now(),
       smartCount, velocity: Math.round(velocity), entryMC: tok.peakMC,
+      warnings,
     };
     db.signalHistory.unshift(record);
     if (db.signalHistory.length > 300) db.signalHistory.length = 300;
     markDirty();
 
+    const warnLine = warnings.length ? `⚠️ ${warnings.join(", ")}\n` : "";
     await tgSend(
       `🟢 <b>SİNYAL</b> — ${tok.symbol}\n${tok.name}\n\n` +
+      warnLine +
       `👥 Akıllı cüzdan: ${smartCount}\n` +
       `⚡ Hız (${CONFIG.VELOCITY_WINDOW_MIN}dk): %${Math.round(velocity)}\n` +
       `💰 MC: ${tok.peakMC.toFixed(2)} SOL\n` +
@@ -285,12 +332,15 @@ function onNewToken(t, ws) {
   const startMC = t.marketCapSol || 0.01;
   state.tracked.set(t.mint, {
     mint: t.mint, symbol: t.symbol || "?", name: t.name,
+    creatorWallet: t.traderPublicKey || null,
     launchMC: startMC, launchTime: now,
     peakMC: startMC, lastTradeTime: now,
-    buyers: new Map(),        // wallet -> {mc, time} (erken alıcılar)
+    buyers: new Map(),        // wallet -> {mc, time, sizeSol} (erken alıcılar)
     smartBuyers: new Set(),
     mcHistory: [{ mc: startMC, t: now }],
     signaled: false,
+    earlySells: 0,
+    creatorSold: false,
   });
   try { ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [t.mint] })); } catch {}
 }
@@ -307,9 +357,18 @@ function onTokenTrade(m) {
   if (m.txType === "buy" && m.traderPublicKey) {
     const ageSec = (now - tok.launchTime) / 1000;
     if (ageSec <= CONFIG.EARLY_WINDOW_SEC && !tok.buyers.has(m.traderPublicKey)) {
-      tok.buyers.set(m.traderPublicKey, { mc: m.marketCapSol, time: now });
+      tok.buyers.set(m.traderPublicKey, { mc: m.marketCapSol, time: now, sizeSol: m.solAmount || 0.05 });
     }
     if (smartWalletSet.has(m.traderPublicKey)) tok.smartBuyers.add(m.traderPublicKey);
+  } else if (m.txType === "sell" && m.traderPublicKey) {
+    const ageSec = (now - tok.launchTime) / 1000;
+    if (ageSec <= CONFIG.EARLY_SELL_WINDOW_SEC) {
+      tok.earlySells = (tok.earlySells || 0) + 1;
+      if (tok.creatorWallet && m.traderPublicKey === tok.creatorWallet && !tok.creatorSold) {
+        tok.creatorSold = true;
+        if (tok.signaled) tgSend(`⚠️ <b>${tok.symbol}</b> kurucu erken sattı! Dikkatli ol.`);
+      }
+    }
   }
 
   maybeSignal(tok);
@@ -320,14 +379,25 @@ function onTokenTrade(m) {
 function finalizeToken(mint, tok, ws) {
   const ratio = tok.peakMC / tok.launchMC;
   const isWin = ratio >= CONFIG.WIN_MULTIPLE;
-  for (const wallet of tok.buyers.keys()) {
-    const w = db.walletStats[wallet] || { wins: 0, total: 0, sumMultiple: 0, lastSeen: 0 };
+  const now = Date.now();
+  for (const [wallet, info] of tok.buyers) {
+    const w = db.walletStats[wallet] || { wins: 0, total: 0, sumMultiple: 0, sumWeighted: 0, sumWeight: 0, lastSeen: 0 };
+    // büyük pozisyonla kazanmak küçük pozisyondan daha anlamlı — log ile yumuşat
+    const weight = Math.log(1 + (info.sizeSol || 0.05));
     w.total++;
     if (isWin) w.wins++;
     w.sumMultiple += ratio;
-    w.lastSeen = Date.now();
+    w.sumWeighted += ratio * weight;
+    w.sumWeight += weight;
+    w.lastSeen = now;
     db.walletStats[wallet] = w;
   }
+
+  if (tok.signaled) {
+    const rec = db.signalHistory.find((s) => s.mint === mint && s.outcomeRatio === undefined);
+    if (rec) { rec.outcomeRatio = ratio; rec.outcomeAt = now; }
+  }
+
   markDirty();
   if (db.approved[mint]) finalizeApproved(mint, tok);
   state.tracked.delete(mint);
@@ -346,21 +416,42 @@ function sweepTracked(ws) {
 }
 
 // ---------- AKILLI CÜZDAN LİSTESİNİ YENİDEN HESAPLA ----------
+// Skor = pozisyon-büyüklüğü-ağırlıklı ortalama çarpan × yakınlık faktörü
+// (eski performansın etkisi RECENCY_HALFLIFE_DAYS'te yarıya iner)
 function recomputeSmartWallets() {
+  const now = Date.now();
   const list = Object.entries(db.walletStats)
     .filter(([, w]) => w.total > 0 && w.wins >= CONFIG.MIN_WINS_FOR_SMART && w.wins / w.total >= CONFIG.MIN_WINRATE_FOR_SMART)
-    .map(([wallet, w]) => ({
-      wallet, wins: w.wins, total: w.total,
-      winRate: w.wins / w.total, avgMultiple: w.sumMultiple / w.total, lastSeen: w.lastSeen,
-    }))
-    .sort((a, b) => b.avgMultiple - a.avgMultiple)
+    .map(([wallet, w]) => {
+      const avgMultiple = w.sumWeight > 0 ? w.sumWeighted / w.sumWeight : w.sumMultiple / w.total;
+      const ageDays = (now - (w.lastSeen || now)) / 86400000;
+      const recency = Math.pow(0.5, ageDays / CONFIG.RECENCY_HALFLIFE_DAYS);
+      return {
+        wallet, wins: w.wins, total: w.total,
+        winRate: w.wins / w.total, avgMultiple, lastSeen: w.lastSeen,
+        score: avgMultiple * recency,
+      };
+    })
+    .sort((a, b) => b.score - a.score)
     .slice(0, CONFIG.MAX_SMART_WALLETS);
 
   smartWalletSet = new Set(list.map((x) => x.wallet));
   db.smartWallets = list;
-  db.lastMinedAt = Date.now();
+  db.lastMinedAt = now;
   markDirty();
   tgSend(`🧠 Akıllı cüzdan listesi güncellendi: ${list.length} cüzdan (toplam ölçülen: ${Object.keys(db.walletStats).length}).`);
+}
+
+// ---------- BAĞLANTI SAĞLIĞI UYARISI ----------
+let wsReconnects = [];
+function noteReconnectAndMaybeAlert() {
+  const now = Date.now();
+  wsReconnects.push(now);
+  const windowMs = CONFIG.WS_RECONNECT_WINDOW_MIN * 60000;
+  wsReconnects = wsReconnects.filter((t) => now - t <= windowMs);
+  if (wsReconnects.length === CONFIG.WS_RECONNECT_ALERT_THRESHOLD) {
+    tgSend(`🔌 Bağlantı sık sık kopuyor (${wsReconnects.length} kez / ${CONFIG.WS_RECONNECT_WINDOW_MIN}dk) — PumpPortal veya ağ tarafında bir sorun olabilir.`);
+  }
 }
 
 // ---------- BAŞLAT ----------
@@ -382,7 +473,7 @@ function start() {
       else if (m.txType === "buy" || m.txType === "sell") onTokenTrade(m);
     } catch (e) {}
   });
-  ws.on("close", () => { log("WS", "Koptu, 5sn sonra tekrar"); setTimeout(start, 5000); });
+  ws.on("close", () => { log("WS", "Koptu, 5sn sonra tekrar"); noteReconnectAndMaybeAlert(); setTimeout(start, 5000); });
   ws.on("error", (e) => log("WS", e.message));
 }
 

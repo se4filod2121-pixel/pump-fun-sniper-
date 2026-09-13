@@ -97,12 +97,13 @@ Command**'ı şu şekilde değiştir:
 node smart-signal-bot.js
 ```
 
-Gerekli ortam değişkenleri (`bot.js` ile aynı ikisi yeterli):
+Gerekli ortam değişkenleri:
 
 | Değişken | Değer |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | BotFather'dan aldığın token |
 | `TELEGRAM_CHAT_ID` | userinfobot'tan aldığın ID |
+| `DATA_DIR` (opsiyonel) | Kalıcı verinin yazılacağı klasör — Railway'de bir **Volume** bağlarsan onun mount path'i (örn. `/data`). Verilmezse veri kod dizinine yazılır ve **her deploy'da sıfırlanır**. |
 
 ### Telegram komutları
 
@@ -110,17 +111,44 @@ Gerekli ortam değişkenleri (`bot.js` ile aynı ikisi yeterli):
 |---|---|
 | `/durum` | İzlenen token, akıllı cüzdan sayısı, bugünkü sinyal sayısı |
 | `/liste` | En iyi akıllı cüzdanlar (kısa özet) |
-| `/sinyaller` | Son sinyaller |
+| `/sinyaller` | Son sinyaller (sonuçlanmışsa gerçek çarpanla birlikte) |
+| `/kalite` | Tüm sinyallerin gerçek sonuç istatistiği: ortalama çarpan, 2x/5x oranı, zararda kapanan yüzdesi |
 | `/onayla <mint önek>` | Bir sinyali takibe al — 2x/5x/10x/20x'e ulaşınca haber verir |
 | `/durdur` / `/baslat` | Yeni sinyal üretimini durdur/aç (öğrenme her zaman devam eder) |
 | `/ayarlar` | Aktif eşik ve limitleri gösterir |
 
+### Rug/uyarı tespiti
+
+Ekstra veri kaynağı gerekmez — zaten dinlenen trade akışından çıkarılır:
+- **Kurucu erken sattı** — token'ı oluşturan cüzdan ilk birkaç dakika içinde
+  satarsa sinyale ⚠️ eklenir, kalite yıldızı otomatik düşer.
+- **Erken satış yoğun** — kısa sürede çok sayıda satış olması (dump belirtisi).
+
+### Cüzdan skorlaması
+
+Basit kazanma oranından daha gelişmiş: büyük pozisyonla kazanmak küçük
+pozisyondan daha değerli sayılır (ağırlıklı ortalama), ve eski performansın
+etkisi zamanla azalır (14 günde yarıya iner) — böylece liste sürekli
+güncel kalır, eskiden bir kez tutturmuş ama artık aktif olmayan cüzdanlar
+öne çıkmaz.
+
 ### Veri kalıcılığı
 
-Bot öğrendiği her şeyi (`smart-signal-data.json`) diske yazar — Railway/Render
-restart olsa bile cüzdan puanları ve akıllı cüzdan listesi kaybolmaz.
-(Not: Railway/Render'ın **ücretsiz** planlarında disk kalıcı olmayabilir —
-her deploy'da dosya sistemi sıfırlanabilir. Kalıcılığın gerçekten çalışması
-için "persistent volume" desteği olan bir plan/servis gerekebilir; bu
-konuda emin değilsen deploy ettiğin platformun disk kalıcılığı belgelerine
-bak.)
+Bot öğrendiği her şeyi (`smart-signal-data.json`, `DATA_DIR` altında) diske
+yazar. **Railway'de kalıcı olması için servise bir Volume bağlaman ve
+`DATA_DIR`'i o volume'ün mount path'ine ayarlaman gerekir** — aksi halde
+her deploy'da (kod güncellemesi, restart) öğrendiği tüm cüzdan verisi
+sıfırlanır.
+
+### Bilinmesi gerekenler / sınırlar
+
+- Bu bot **sinyal üretir, otomatik alım-satım yapmaz**. Gerçek işlem
+  yapmak istersen ayrı bir execution katmanı (örn. PumpPortal Lightning
+  API veya Jupiter) eklemek gerekir — bu, gerçek para riskini artıran
+  ayrı bir karar olduğu için bilinçli şekilde bu botun kapsamı dışında
+  tutuldu.
+- Hız/rekabet: profesyonel botlar özel RPC (Jito bundle, 0slot, Nozomi
+  gibi) kullanarak milisaniyeler içinde işlem gönderir. Bu bot public
+  PumpPortal WebSocket'i kullanır — sinyal üretiminde bu fark önemli
+  değil (saniyeler içinde tespit ediyoruz), ama otomatik alıma geçersen
+  bu hız farkı kâr/zarar üzerinde belirleyici olur.

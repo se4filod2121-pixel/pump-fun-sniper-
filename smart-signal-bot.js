@@ -18,8 +18,9 @@
  *   NOT: Bot ilk 24-48 saat veri toplarken liste küçük/boş olur, sinyaller
  *   seyrek gelir. Bu normaldir — veri biriktikçe kalite artar.
  *
- * Bot ayrıca her 10 dakikada bir kendi durumunu (STATUS_UPDATE_MIN) otomatik
- * olarak Telegram'a bildirir — komut beklemeden.
+ * Bot ayrıca her 5 dakikada bir kendi durumunu (STATUS_UPDATE_MIN) otomatik
+ * olarak Telegram'a bildirir — komut beklemeden. Mesajların altında sabit
+ * bir buton menüsü (MAIN_KEYBOARD) durur, komut yazmadan dokunarak kullanılır.
  *
  * TELEGRAM KOMUTLARI:
  *   /durum     -> bot durumu, izlenen token, akıllı cüzdan sayısı
@@ -80,7 +81,7 @@ const CONFIG = {
   WS_RECONNECT_ALERT_THRESHOLD: 5,  // bu pencerede bu kadar kopma olursa uyar
   WS_RECONNECT_WINDOW_MIN: 10,
 
-  STATUS_UPDATE_MIN: 10,            // botun kendi durumunu otomatik bildirdiği aralık
+  STATUS_UPDATE_MIN: 5,              // botun kendi durumunu otomatik bildirdiği aralık
 
   PERSIST_INTERVAL_SEC: 60,
   SWEEP_INTERVAL_SEC: 300,
@@ -142,13 +143,27 @@ http.createServer((req, res) => {
 }).listen(CONFIG.PORT, () => log("HTTP", `Sağlık sunucusu port ${CONFIG.PORT}'da`));
 
 // ---------- TELEGRAM ----------
-async function tgSend(text) {
+// Sabit buton menüsü — Telegram'da mesaj kutusunun altında sürekli görünür,
+// komut yazmak yerine dokunarak kullanılabilir.
+const MAIN_KEYBOARD = {
+  keyboard: [
+    ["/durum", "/tokenler"],
+    ["/liste", "/sinyaller"],
+    ["/kalite", "/yardim"],
+    ["/durdur", "/baslat"],
+  ],
+  resize_keyboard: true,
+};
+
+async function tgSend(text, keyboard) {
   if (!TG_TOKEN || !TG_CHAT) return;
   try {
+    const body = { chat_id: TG_CHAT, text, parse_mode: "HTML", disable_web_page_preview: true };
+    if (keyboard) body.reply_markup = keyboard;
     await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: "HTML", disable_web_page_preview: true }),
+      body: JSON.stringify(body),
     });
   } catch (e) { log("TG", "Mesaj gönderilemedi: " + e.message); }
 }
@@ -266,7 +281,8 @@ async function handleCommand(rawText) {
     );
   } else if (text === "/yardim" || text === "/help") {
     await tgSend(
-      `📋 <b>KOMUTLAR</b>\n/durum /tokenler /liste /sinyaller /kalite\n/onayla <mint önek>\n/durdur /baslat /ayarlar`
+      `📋 <b>KOMUTLAR</b>\n/durum /tokenler /liste /sinyaller /kalite\n/onayla <mint önek>\n/durdur /baslat /ayarlar`,
+      MAIN_KEYBOARD
     );
   }
 }
@@ -491,7 +507,8 @@ function start() {
     log("WS", "PumpPortal bağlandı");
     ws.send(JSON.stringify({ method: "subscribeNewToken" }));
     tgSend(
-      `🤖 Sinyal botu çalışıyor!\nAkıllı cüzdan: ${smartWalletSet.size}\nKomutlar: /durum /liste /sinyaller /onayla /durdur /baslat`
+      `🤖 Sinyal botu çalışıyor!\nAkıllı cüzdan: ${smartWalletSet.size}\nAşağıdaki butonlarla kullanabilirsin 👇`,
+      MAIN_KEYBOARD
     );
   });
   ws.on("message", (raw) => {
@@ -510,7 +527,7 @@ function start() {
 setInterval(() => { if (currentWs) sweepTracked(currentWs); }, CONFIG.SWEEP_INTERVAL_SEC * 1000);
 setInterval(() => { if (dirty) { saveDb(db); dirty = false; } }, CONFIG.PERSIST_INTERVAL_SEC * 1000);
 setInterval(recomputeSmartWallets, CONFIG.MINE_INTERVAL_HOURS * 3600 * 1000);
-setInterval(() => tgSend(buildStatusMessage(true)), CONFIG.STATUS_UPDATE_MIN * 60 * 1000);
+setInterval(() => tgSend(buildStatusMessage(true), MAIN_KEYBOARD), CONFIG.STATUS_UPDATE_MIN * 60 * 1000);
 // Yeterli veri birikmesi için ilk cüzdan hesaplamasını hemen değil, biraz veri toplandıktan sonra yap
 setTimeout(recomputeSmartWallets, 30 * 60 * 1000);
 

@@ -499,6 +499,7 @@ function noteReconnectAndMaybeAlert() {
 
 // ---------- BAŞLAT ----------
 let currentWs = null;
+let debugMsgCount = 0;
 function start() {
   log("BOT", "Akıllı cüzdan + hız sinyal botu başlıyor");
   const ws = new WebSocket("wss://pumpportal.fun/api/data");
@@ -514,6 +515,8 @@ function start() {
   ws.on("message", (raw) => {
     try {
       const m = JSON.parse(raw.toString());
+      // GEÇİCİ TEŞHİS: gerçek mesaj şemasını doğrulamak için ilk birkaç mesajı logla
+      if (debugMsgCount < 20) { debugMsgCount++; log("DEBUG-MSG", JSON.stringify(m)); }
       if (m.txType === "create") onNewToken(m, ws);
       else if (m.txType === "buy" || m.txType === "sell") onTokenTrade(m);
     } catch (e) {}

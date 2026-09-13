@@ -1,6 +1,6 @@
 # 📱 Pump.fun Sniper Bot — Telefondan Kurulum Rehberi
 
-Bu bot GitHub'da durur, Railway bulutunda 7/24 çalışır, sen Telegram'dan yönetirsin.
+Bu bot GitHub'da durur, Railway bulutunda 7/24 çalışır, sen Telegram'dan yönetirsin. Artık her push'ta Railway otomatik deploy ediyor.
 **Tüm adımlar telefonun tarayıcısından yapılabilir. Bilgisayar gerekmez.**
 
 ---

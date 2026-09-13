@@ -23,6 +23,7 @@
  *
  * TELEGRAM KOMUTLARI:
  *   /durum     -> bot durumu, izlenen token, akıllı cüzdan sayısı
+ *   /tokenler  -> şu an izlenen token'lar (en yüksek çarpanlı 20 tanesi)
  *   /liste     -> en iyi akıllı cüzdanlar (kısa özet)
  *   /sinyaller -> son sinyaller ve (varsa) sonuçları
  *   /kalite    -> tüm sinyallerin gerçek sonuç istatistiği (2x/5x oranı vb.)
@@ -190,6 +191,22 @@ async function handleCommand(rawText) {
   const text = rawText.toLowerCase();
   if (text === "/durum" || text === "/status") {
     await tgSend(buildStatusMessage(false));
+  } else if (text === "/tokenler") {
+    if (!state.tracked.size) { await tgSend("Şu an izlenen token yok."); return; }
+    const now = Date.now();
+    const rows = [...state.tracked.values()]
+      .map((tok) => ({ tok, ratio: tok.peakMC / tok.launchMC }))
+      .sort((a, b) => b.ratio - a.ratio)
+      .slice(0, 20)
+      .map(({ tok, ratio }) => {
+        const ageMin = Math.round((now - tok.launchTime) / 60000);
+        const flag = tok.creatorSold ? " ⚠️kurucu sattı" : "";
+        return `• ${tok.symbol} — ${ratio.toFixed(2)}x | 👥${tok.smartBuyers.size} | ${ageMin}dk | <code>${tok.mint.slice(0, 8)}</code>${flag}`;
+      })
+      .join("\n");
+    await tgSend(
+      `🔍 <b>İZLENEN TOKENLER</b> (toplam ${state.tracked.size}, en yüksek çarpanlı 20 tanesi)\n${rows}`
+    );
   } else if (text === "/liste") {
     if (!db.smartWallets.length) {
       await tgSend("Henüz akıllı cüzdan listesi yok — bot veri topluyor, ilk liste 12 saat içinde çıkar.");
@@ -248,7 +265,7 @@ async function handleCommand(rawText) {
     );
   } else if (text === "/yardim" || text === "/help") {
     await tgSend(
-      `📋 <b>KOMUTLAR</b>\n/durum /liste /sinyaller /kalite\n/onayla <mint önek>\n/durdur /baslat /ayarlar`
+      `📋 <b>KOMUTLAR</b>\n/durum /tokenler /liste /sinyaller /kalite\n/onayla <mint önek>\n/durdur /baslat /ayarlar`
     );
   }
 }

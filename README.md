@@ -109,7 +109,8 @@ Gerekli ortam değişkenleri:
 
 | Komut | Ne yapar |
 |---|---|
-| `/durum` | İzlenen token, akıllı cüzdan sayısı, bugünkü sinyal sayısı |
+| `/durum` | İzlenen token, akıllı cüzdan sayısı, bugünkü sinyal sayısı (bunu bot her 10 dakikada bir kendiliğinden de gönderir) |
+| `/tokenler` | Şu an izlenen token'lar — en yüksek çarpanlı 20 tanesi (sembol, çarpan, akıllı cüzdan sayısı, yaş) |
 | `/liste` | En iyi akıllı cüzdanlar (kısa özet) |
 | `/sinyaller` | Son sinyaller (sonuçlanmışsa gerçek çarpanla birlikte) |
 | `/kalite` | Tüm sinyallerin gerçek sonuç istatistiği: ortalama çarpan, 2x/5x oranı, zararda kapanan yüzdesi |
